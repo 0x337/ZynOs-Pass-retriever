@@ -7,13 +7,21 @@
 # Exploit Title: Hacking Zynos Router System
 # Author: KinG Of PiraTeS
 Facebook Profile: www.fb.me/cr4ck3d
+
 Twitter Profile: https://twitter.com/0x337
+
 E-mail: t5r@hotmail.com / cr4ck3d@offdr5cax.dz
+
 Web Site : www.1337day.com | www.inj3ct0rs.com
+
 Vendor: http://www.zyxel.com/
+
 Version: x.x.x
+
 Security Risk : High
+
 Tested on: [Windows 7 Edition Intégrale 64bit ] é [ Kali Linux ]
+
 #
 
 [shodanhq Search](http://www.shodanhq.com/search?q=RomPager)
