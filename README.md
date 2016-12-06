@@ -33,7 +33,7 @@ Routers vulnerables
 - ... Zynos system 
 Instrucciones
 #############
-![]({{site.baseurl}}//king.sh%20in%20action.PNG)
+![]({{site.baseurl}![]({{site.baseurl}}/https://pbs.twimg.com/media/Cy8-qS8WQAAGHUR.jpg:large)
 1. First Compile : exp.c:
 
     $ gcc -o exp exp.c
