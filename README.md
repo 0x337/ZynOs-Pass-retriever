@@ -50,7 +50,7 @@ This Exploit Grab the Router "admin" Password From this file "rom-0".
 
     exp=./exp;
     
-3. Rnu the exploit :
+3. Run the exploit :
 
     **$ ./king.sh 192.168.1.1**
 
