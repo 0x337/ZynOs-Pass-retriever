@@ -1,4 +1,8 @@
-# ZynOs-Pass-retriever
+##
+
+###
+
+### ZynOs-Pass-retriever
 ####
 # Exploit Title: Hacking Zynos Router System
 # Author: KinG Of PiraTeS
@@ -29,7 +33,7 @@ Routers vulnerables
 - ... Zynos system 
 Instrucciones
 #############
-
+![]({{site.baseurl}}//king.sh%20in%20action.PNG)
 1. First Compile : exp.c:
 
     $ gcc -o exp exp.c
