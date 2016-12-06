@@ -2,7 +2,7 @@
 
 ###
 
-### ZynOs-Pass-retriever
+### **ZynOs-Pass-retriever**
 ####
 # Exploit Title: Hacking Zynos Router System
 # Author: KinG Of PiraTeS
@@ -18,12 +18,12 @@
 
 http://www.shodanhq.com/search?q=RomPager
 
-Description
+**Description**
 ###########
 
 This Exploit Grab the Router "admin" Password From this file "rom-0".
 
-Routers vulnerables
+**Routers vulnerables**
 ###################
 
 - ZyXEL P-660HW T1 V2
@@ -31,7 +31,7 @@ Routers vulnerables
 - Billion 5200
 - TP Link W8901G
 - ... Zynos system 
-Instrucciones
+**Instructions**
 #############
 ![]({{site.baseurl}![]({{site.baseurl}}/https://pbs.twimg.com/media/Cy8-qS8WQAAGHUR.jpg)
 1. First Compile : exp.c:
@@ -50,7 +50,7 @@ Happy Hacking , Good Luck
 
 ####
 
-Peace From Algeria
+Peace From **Algeria**
 
 ####
 =================================**Algerians Hackers**===============================================
