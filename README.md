@@ -1,5 +1,6 @@
 ### **ZynOs-Pass-retriever**
 
+### **Use this script at your own risk! I do not take any responsibility and I'm not liable for any damage caused through use of this Script**
 
 ----------
 
@@ -73,6 +74,7 @@ Peace From **Algeria**
 
 We will do a Manuel methode to décompress rom 0 file 
 and using AutoExploiting Script to Get the Password
+
 # FB Profile: http://www.fb.me/cr4ck3d
 # Twitter Profile: https://twitter.com/0x337
 # E-mail: t5r@hotmail.com / cr4ck3d@offdr5cax.dz
