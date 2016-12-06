@@ -57,7 +57,7 @@ Peace From Algeria
    Over-X , Kha&miX ,Ev!LsCr!pT_Dz , T0xic ,TrOon , Tn_Scorpion , ..others ?___?
 =====================================================================================================
 
-We will a Manuel methode to décompress rom 0 file 
+We will do a Manuel methode to décompress rom 0 file 
 and using AutoExploiting Script to Get the Password
 # FB Profile: http://www.fb.me/cr4ck3d
 # E-mail: t5r@hotmail.com / cr4ck3d@offdr5cax.dz
