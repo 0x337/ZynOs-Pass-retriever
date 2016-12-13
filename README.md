@@ -3,7 +3,7 @@
 ### **Use this script at your own risk! I do not take any responsibility and I'm not liable for any damage caused through use of this Script**
 
 ----------
-
+https://www.youtube.com/watch?v=2R8Zp4vjUKU 
 
 # Exploit Title: Hacking Zynos Router System
 # Author: KinG Of PiraTeS
