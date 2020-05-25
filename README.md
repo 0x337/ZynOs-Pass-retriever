@@ -11,7 +11,7 @@ Facebook Profile: www.fb.me/cr4ck3d
 
 Twitter Profile: https://twitter.com/0x337
 
-E-mail: t5r@hotmail.com / cr4ck3d@offdr5cax.dz
+E-mail: t5r@hotmail.fr / cr4ck3d@offdr5cax.dz
 
 Web Site : www.1337day.com | www.inj3ct0rs.com
 
