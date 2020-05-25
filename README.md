@@ -64,9 +64,9 @@ Peace From **Algeria**
 ##
 =================**Algerians Hackers**=======================
 # Greets To : 
-   KedAns-Dz & Caddy-Dz & kalashinkov3 **All Algerians Hackers** , Kondamne ,  errajol ettayeb , Oussama Dz
+   KedAns-Dz & kalashinkov3 **All Algerians Hackers** , Kondamne ,  errajol ettayeb , Oussama Dz
    (exploit-id.com) , (1337day.com) , (Sec4ever.com) , (h4ckforu.com) , (alboraaq.com)
-   All My Friendz: Hanixpo , Caddy-Dz , Indoushka , Jago-dz ,saoucha , BriscO-Dz . Over-X , Kha&miX ,Ev!LsCr!pT_Dz , T0xic ,TrOon , Tn_Scorpion , ..others ?___?
+   All My Friendz: Hanixpo , Indoushka , Jago-dz , BriscO-Dz . Over-X , Kha&miX ,Ev!LsCr!pT_Dz , T0xic ,TrOon , Tn_Scorpion , ..others ?___?
 
 
 ----------
