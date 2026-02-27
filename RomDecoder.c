@@ -1,308 +1,342 @@
 /**
-
-	zynos rom-0 config password retriever
-	https//twitter.com/0x337
-
-
-	Sample LZS unpacker for rom-0 files (those files are used to
-	store your valuable information by the router). This proggy
-	only focuses on retrieving the password from the rom-0 file.
-
-
-	heavily based on:
-	 - http://git.kopf-tisch.de/?p=zyxel-revert;a=summary
-	 - https://github.com/OmerMor/SciStudio/tree/master/scistudio
-
-**/
-
-
+ * ZyNOS ROM-0 Config Password Retriever
+ *
+ * Unpacks LZS-compressed ROM-0 configuration files from ZyXEL routers
+ * and extracts the stored password.
+ *
+ * Based on:
+ *   - http://git.kopf-tisch.de/?p=zyxel-revert;a=summary
+ *   - https://github.com/OmerMor/SciStudio/tree/master/scistudio
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <memory.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 
+/* -------------------------------------------------------------------------
+ * Types & Constants
+ * ---------------------------------------------------------------------- */
 
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
 
-typedef unsigned short U16;
-typedef unsigned long U32;
-typedef unsigned char UCHAR;
+#define ROM_BASE_OFFSET   0x2000
+#define ROM_PASS_OFFSET   0x14
+#define DEST_SIZE_FACTOR  50   /* decompress buffer = filesize * factor */
+#define ROM_NAME_TARGET   "autoexec.net"
+#define LZS_DATA_SKIP     (0xC + 4)  /* bytes to skip before LZS payload */
 
-typedef struct _lzs_struct
-{
-	UCHAR	*Src;
-	UCHAR	*Dest;
-	UCHAR	*DestNew;
-	U32		SrcPos;
-} lzs_s;
-
-
-#ifdef _MSC_VER
-#pragma pack(push, 1)
-typedef struct romfile_struct {
-	U16 version;
-	U16 size;
-	U16 offset;
-	char name[14];
-} rom_s;
-#pragma pack(pop)
+#if defined(_MSC_VER)
+  #pragma pack(push, 1)
+  #define PACKED
+#elif defined(__GNUC__)
+  #define PACKED __attribute__((packed))
+#else
+  #error "Unknown compiler: manual struct packing required."
 #endif
 
-#ifdef __GNUC__
-typedef struct __attribute__((packed)) romfile_struct {
-	U16 version;
-	U16 size;
-	U16 offset;
-	char name[14];
-} rom_s;
+typedef struct PACKED rom_header {
+    u16  version;
+    u16  size;
+    u16  offset;
+    char name[14];
+} rom_header_t;
 
-#define __FUNCTION__ __func__
-#define _snprintf snprintf
+#if defined(_MSC_VER)
+  #pragma pack(pop)
 #endif
 
+/* -------------------------------------------------------------------------
+ * Bit-stream reader
+ * ---------------------------------------------------------------------- */
 
+typedef struct {
+    const u8 *src;
+    u8       *dst;
+    u8       *dst_end;  /* pointer past last written byte after unpack */
+    u32       src_pos;  /* current bit position in src */
+} lzs_ctx_t;
 
-U16 htons(U16 x)
+static inline u16 be16(u16 x)
 {
-	UCHAR *s = (UCHAR*)&x;
-	return (U16)(s[0] << 8 | s[1]);
+    const u8 *b = (const u8 *)&x;
+    return (u16)((b[0] << 8) | b[1]);
 }
 
-U32 GetBits(lzs_s *Lzs, int NumOfBits)
+/**
+ * Read @num_bits from the bit-stream.
+ * Reads up to 3 bytes ahead so @num_bits must be <= 16.
+ */
+static u32 lzs_read_bits(lzs_ctx_t *ctx, int num_bits)
 {
-	U32		Out = 0;
-	int		BytePos, BitPos;
+    if (num_bits <= 0)
+        return 0;
 
-	if(NumOfBits > 0)
-	{
-		BytePos		=	Lzs->SrcPos / 8;
-		BitPos		=	Lzs->SrcPos % 8;
+    int byte_pos = ctx->src_pos / 8;
+    int bit_pos  = ctx->src_pos % 8;
 
-		Out			=	(Lzs->Src[BytePos] << 16) | (Lzs->Src[BytePos + 1] << 8) | Lzs->Src[BytePos + 2];
-		Out			=	(Out >> (24 - NumOfBits - BitPos)) & ((1L << NumOfBits) - 1);
-		Lzs->SrcPos	+=	NumOfBits;
-	}
+    u32 window = ((u32)ctx->src[byte_pos    ] << 16)
+               | ((u32)ctx->src[byte_pos + 1] <<  8)
+               | ((u32)ctx->src[byte_pos + 2]);
 
-	return Out;
+    ctx->src_pos += num_bits;
+    return (window >> (24 - num_bits - bit_pos)) & ((1u << num_bits) - 1);
 }
 
-int GetLen(lzs_s *Lzs)
+/**
+ * Decode the variable-length match length field.
+ */
+static int lzs_read_length(lzs_ctx_t *ctx)
 {
+    int length = 2;
+    int bits;
 
-	int Bits;
-	int Length=2;
+    do {
+        bits    = lzs_read_bits(ctx, 2);
+        length += bits;
+    } while (bits == 3 && length < 8);
 
-	do
-	{
-		Bits	=	GetBits(Lzs, 2);
-		Length	+=	Bits;
-	}
-	while((Bits == 3) && (Length < 8));
+    if (length == 8) {
+        do {
+            bits    = lzs_read_bits(ctx, 4);
+            length += bits;
+        } while (bits == 15);
+    }
 
-	if (Length == 8)
-	{
-		do
-		{
-			Bits	=	GetBits(Lzs, 4);
-			Length	+=	Bits;
-		}
-		while(Bits == 15);
-	}
-
-	return Length;
+    return length;
 }
 
+/* -------------------------------------------------------------------------
+ * LZS decompressor
+ * ---------------------------------------------------------------------- */
 
-int LzsUnpack(lzs_s *Lzs)
+/**
+ * Decompress LZS data from ctx->src into ctx->dst.
+ *
+ * Returns true on success (end-of-stream marker found),
+ * false on error (dictionary underflow or other problem).
+ */
+static bool lzs_decompress(lzs_ctx_t *ctx, u8 *dst_buf, size_t dst_buf_size)
 {
-	int			Tag, Offset, Len;
-	UCHAR		*d, *Dict;
+    u8 *d = dst_buf;
+    u8 *dst_limit = dst_buf + dst_buf_size;
 
-	d			=	Lzs->Dest;
+    while (true) {
+        /* Literal or reference? */
+        if (lzs_read_bits(ctx, 1) == 0) {
+            /* Literal byte */
+            if (d >= dst_limit) {
+                fprintf(stderr, "lzs: output buffer overflow\n");
+                return false;
+            }
+            *d++ = (u8)lzs_read_bits(ctx, 8);
+            continue;
+        }
 
-	// unpacking loop
-	while (1)
-	{
+        /* Back-reference */
+        int  use_short  = lzs_read_bits(ctx, 1);
+        int  offset     = lzs_read_bits(ctx, use_short ? 7 : 11);
 
-		Tag		=	GetBits(Lzs, 1);
+        if (use_short && offset == 0) {
+            /* End-of-stream marker */
+            printf("LZS: end-of-stream marker found.\n");
+            break;
+        }
 
-		if (Tag == 0)
-		{
-			// uncompressed byte
-			*d++	=	(UCHAR)GetBits(Lzs, 8);
-			continue;
-		}
+        u8 *ref = d - offset;
+        if (ref < dst_buf) {
+            fprintf(stderr, "lzs: dictionary underflow (offset=%d)\n", offset);
+            return false;
+        }
 
+        int length = lzs_read_length(ctx);
+        if (d + length > dst_limit) {
+            fprintf(stderr, "lzs: output buffer overflow during copy\n");
+            return false;
+        }
 
-		Tag		=	GetBits(Lzs, 1);
-		Offset	=	GetBits(Lzs, (Tag == 1) ? 7:11);
+        while (length--)
+            *d++ = *ref++;
+    }
 
-		if ((Tag == 1) && (Offset == 0))
-		{
-			// end of stream?
-			printf("End of stream\r\n");
-			break;
-		}
-
-
-		Dict	=	&d[-Offset];
-	
-		if (Dict < Lzs->Dest)
-		{
-			printf("%s: underflow error, offset=0x%08x tag=0x%08x\r\n",
-				__FUNCTION__,
-				Offset,
-				Tag);
-			break;
-		}
-
-
-		Len		=	GetLen(Lzs);		
-		while (Len--)
-			*d++	=	*Dict++;
-	} 
-
-	Lzs->DestNew		=	d;
-	return 0;
+    ctx->dst_end = d;
+    return true;
 }
 
-int LzsUnpackFile(char *FileName)
+/* -------------------------------------------------------------------------
+ * ROM-0 file processing
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Read the entire contents of @path into a heap-allocated buffer.
+ * Caller is responsible for free()ing the returned pointer.
+ * Sets *out_size on success; returns NULL on failure.
+ */
+static u8 *read_file(const char *path, size_t *out_size)
 {
-	int			i;
-	FILE		*SrcFile, *DestFile;
-	UCHAR		*Src, *Dest, *Base, *d, *s;
-	long		FileSize;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        perror(path);
+        return NULL;
+    }
 
-	lzs_s		Lzs;
-	rom_s		Roms;
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
 
-	char		DestFilePath[256];
+    if (file_size <= 0) {
+        fprintf(stderr, "read_file: invalid file size %ld\n", file_size);
+        fclose(f);
+        return NULL;
+    }
 
-	memset(&Lzs, 0, sizeof(lzs_s));
+    u8 *buf = malloc((size_t)file_size);
+    if (!buf) {
+        fprintf(stderr, "read_file: malloc(%ld) failed\n", file_size);
+        fclose(f);
+        return NULL;
+    }
 
+    if (fread(buf, 1, (size_t)file_size, f) != (size_t)file_size) {
+        fprintf(stderr, "read_file: short read on \"%s\"\n", path);
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
 
-	SrcFile		=	fopen(FileName, "rb");
-	if (!SrcFile)
-	{
-		printf("%s: unable to open file \"%s\"\r\n", __FUNCTION__, FileName);
-		return -1;
-	}
-
-
-	fseek(SrcFile, 0, SEEK_END);
-	FileSize = ftell(SrcFile);
-	fseek(SrcFile, 0, SEEK_SET);
-	
-
-	// warning: this can overflow
-#define DEST_SIZE	FileSize*50
-	Src		=	(UCHAR*)malloc(FileSize);
-	Dest	=	(UCHAR*)malloc(DEST_SIZE);
-
-	if (!Src || !Dest)
-	{
-		printf("%s: unable to allocate memory, FileSize = 0x%08x\r\n", __FUNCTION__, FileSize);
-		fclose(SrcFile);
-		return -1;
-	}
-
-	d		=	Dest;
-	s		=	Src;
-
-	memset(Dest, 0, DEST_SIZE);
-	fread(Src, 1, FileSize, SrcFile);
-	fclose(SrcFile);
-
-
-
-#define BASE_OFFSET		0x2000
-#define PASS_OFFSET		0x14
-
-	i				=	0;
-	Base			=	s + BASE_OFFSET;
-
-
-	while (1)
-	{
-
-		memcpy(&Roms, Base, sizeof(rom_s));
-		Roms.size	=	htons(Roms.size);
-		Roms.offset	=	htons(Roms.offset);
-
-		if ((Base > (Src + FileSize)) || (Roms.name[0] == 0))
-		{
-			printf("End of file reached.\r\n");
-			break;
-		}
-
-		printf("[%02d] rom_header block offset=0x%08x size=0x%08x name=%s \r\n",
-			i++,
-			Roms.offset,
-			Roms.size,
-			Roms.name);
-
-
-		if (strcmp((char*)&Roms.name, "autoexec.net") == 0)
-		{
-			Lzs.Dest	=	d;
-			Lzs.Src		=	s + BASE_OFFSET + Roms.offset + 0xC + 4;
-			Lzs.SrcPos	=	0;
-			LzsUnpack(&Lzs);
-
-			printf("Your password is: %s\r\n", (Lzs.Dest + PASS_OFFSET));
-		}
-		else
-		{
-			printf("Not the one we wanted, skipping.\r\n");
-		}
-
-		Base		+=	sizeof(rom_s);
-	}
-
-
-	_snprintf(DestFilePath, sizeof(DestFilePath) - 1, "%s.dat", FileName);
-
-	DestFile	=	fopen(DestFilePath, "wb");
-	if (DestFile)
-	{
-		fwrite(Dest, ((UCHAR*)Lzs.DestNew - (UCHAR*)Dest), 1, DestFile);
-		fclose(DestFile);
-
-		printf("Dumped %d bytes to \"%s\"\r\n", ((UCHAR*)Lzs.DestNew - (UCHAR*)Dest), DestFilePath);
-	}
-	else
-	{
-		printf("%s: error unable to dump unpacked data to \"%s\"!\r\n", __FUNCTION__, DestFilePath);
-	}
-
-	free(Dest);
-	free(Src);
-	return 0;
+    fclose(f);
+    *out_size = (size_t)file_size;
+    return buf;
 }
 
+/**
+ * Write @len bytes from @data to the file at @path.
+ * Returns true on success.
+ */
+static bool write_file(const char *path, const u8 *data, size_t len)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        perror(path);
+        return false;
+    }
 
+    bool ok = (fwrite(data, 1, len, f) == len);
+    fclose(f);
+    return ok;
+}
+
+/**
+ * Parse the ROM-0 file at @in_path, decompress the autoexec.net block,
+ * print the embedded password, and write the decompressed data to
+ * @in_path + ".dat".
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+static int process_rom0(const char *in_path)
+{
+    size_t file_size = 0;
+    u8 *src = read_file(in_path, &file_size);
+    if (!src)
+        return -1;
+
+    size_t dst_size = file_size * DEST_SIZE_FACTOR;
+    u8 *dst = calloc(1, dst_size);
+    if (!dst) {
+        fprintf(stderr, "process_rom0: calloc(%zu) failed\n", dst_size);
+        free(src);
+        return -1;
+    }
+
+    const u8 *base       = src + ROM_BASE_OFFSET;
+    const u8 *src_end    = src + file_size;
+    int        block_idx = 0;
+    bool       found     = false;
+    lzs_ctx_t  ctx       = {0};
+
+    while (true) {
+        if (base + sizeof(rom_header_t) > src_end) {
+            printf("End of file reached.\n");
+            break;
+        }
+
+        rom_header_t hdr;
+        memcpy(&hdr, base, sizeof(hdr));
+        hdr.size   = be16(hdr.size);
+        hdr.offset = be16(hdr.offset);
+
+        if (hdr.name[0] == '\0') {
+            printf("End of ROM table (empty name).\n");
+            break;
+        }
+
+        printf("[%02d] offset=0x%04x  size=0x%04x  name=%s\n",
+               block_idx++, hdr.offset, hdr.size, hdr.name);
+
+        if (strcmp(hdr.name, ROM_NAME_TARGET) == 0) {
+            const u8 *lzs_data = src + ROM_BASE_OFFSET + hdr.offset + LZS_DATA_SKIP;
+            if (lzs_data >= src_end) {
+                fprintf(stderr, "process_rom0: LZS data pointer out of bounds\n");
+                break;
+            }
+
+            ctx.src     = lzs_data;
+            ctx.src_pos = 0;
+
+            if (lzs_decompress(&ctx, dst, dst_size)) {
+                const char *password = (const char *)(dst + ROM_PASS_OFFSET);
+                printf("\n>>> Password: %s\n\n", password);
+                found = true;
+            }
+        } else {
+            printf("    (skipping)\n");
+        }
+
+        base += sizeof(rom_header_t);
+    }
+
+    if (!found)
+        fprintf(stderr, "Warning: \"%s\" block not found; password not extracted.\n",
+                ROM_NAME_TARGET);
+
+    /* Write decompressed output */
+    if (ctx.dst_end) {
+        char out_path[512];
+        snprintf(out_path, sizeof(out_path), "%s.dat", in_path);
+        size_t written = (size_t)(ctx.dst_end - dst);
+
+        if (write_file(out_path, dst, written))
+            printf("Wrote %zu decompressed bytes to \"%s\"\n", written, out_path);
+        else
+            fprintf(stderr, "process_rom0: failed to write output file\n");
+    }
+
+    free(dst);
+    free(src);
+    return found ? 0 : -1;
+}
+
+/* -------------------------------------------------------------------------
+ * Entry point
+ * ---------------------------------------------------------------------- */
 
 int main(int argc, char *argv[])
 {
+    puts("----------------------------------------------");
+    puts(" ZyNOS ROM-0 Config Password Retriever");
+    puts("----------------------------------------------\n");
 
-	printf("--------------------------------------------\r\n");
-	printf(" zynos rom-0 config password retriever\r\n");
-	printf(" https://www.fb.com/cr4ck3d - @0x337 \r\n");
-	printf("--------------------------------------------\r\n\r\n");
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <path_to_rom0_file>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
 
+    printf("Processing \"%s\" ...\n\n", argv[1]);
+    int result = process_rom0(argv[1]);
 
-	if (argc < 2)
-	{
-		printf("Usage: rom0decoder <path_to_rom0_file> \r\n");
-		return -1;
-	}
-
-	printf("Trying to retrieve password from \"%s\"\r\n", argv[1]);
-	LzsUnpackFile(argv[1]);
-
-	printf("All done!\r\n");
-
-	return 0;
+    puts(result == 0 ? "Done." : "Finished with errors.");
+    return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-
-
-
