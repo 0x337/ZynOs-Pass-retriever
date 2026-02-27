@@ -1,179 +1,260 @@
-/*
- * exp.c
+/**
+ * lzs_decompress.c
  *
- *  Created on: 15/02/2014
- *      Author: alguien , edited By KinG Of PiraTeS
+ * LZS decompressor for ROM-0 / ZyXEL config blobs.
+ *
+ * Original authors: alguien, KinG Of PiraTeS
+ * Rewritten for clarity, safety, and portability.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <strings.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 
-char get_bit(char *data, int *offset, int *index) {
-	char abyte;
-	abyte = (data[*index] & (1 << (7 - *offset))) >> (7 - *offset);
-	(*offset)++;
-	if (*offset == 8) {
-		(*index)++;
-		*offset = 0;
-	}
-	return abyte;
+/* -------------------------------------------------------------------------
+ * Configuration
+ * ---------------------------------------------------------------------- */
+
+#define HISTORY_SIZE   2048u   /* LZS sliding-window / output buffer size */
+#define READ_SIZE      2048u   /* bytes read from input file               */
+
+/* -------------------------------------------------------------------------
+ * Bit-stream reader
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    const uint8_t *data;   /* compressed input buffer          */
+    size_t         size;   /* total bytes in data              */
+    size_t         index;  /* current byte position            */
+    int            offset; /* current bit position within byte (0-7) */
+} bitstream_t;
+
+/**
+ * Read a single bit from the stream.
+ * Returns the bit value (0 or 1), or -1 on end-of-data.
+ */
+static int bs_read_bit(bitstream_t *bs)
+{
+    if (bs->index >= bs->size)
+        return -1;
+
+    int bit = (bs->data[bs->index] >> (7 - bs->offset)) & 1;
+    if (++bs->offset == 8) {
+        bs->offset = 0;
+        bs->index++;
+    }
+    return bit;
 }
 
-char *get_nbits(int nbits, char *data, int *offset, int *index) {
-	char *bytes;
-	int nbytes = (nbits % 8) ? nbits / 8 + 1 : nbits / 8;
-	int boffset = (nbits % 8) ? 8 - nbits % 8 : 0;
-	int bindex = 0;
-
-	bytes = malloc(sizeof(char) * nbytes);
-	bzero(bytes, sizeof(char) * nbytes);
-
-	int i;
-	char bit;
-	for (i = 0; i < nbits; i++) {
-		bit = get_bit(data, offset, index);
-
-		bytes[bindex] = bytes[bindex] | ((bit << 7) >> boffset);
-		boffset++;
-		if (boffset == 8) {
-			bindex++;
-			boffset = 0;
-		}
-	}
-
-	return bytes;
+/**
+ * Read @nbits bits from the stream, MSB first, into a uint32_t.
+ * Returns false if the stream runs out of data.
+ */
+static bool bs_read_bits(bitstream_t *bs, int nbits, uint32_t *out)
+{
+    uint32_t value = 0;
+    for (int i = 0; i < nbits; i++) {
+        int bit = bs_read_bit(bs);
+        if (bit < 0)
+            return false;
+        value = (value << 1) | (uint32_t)bit;
+    }
+    *out = value;
+    return true;
 }
 
-int is_endmarker(char *data, int *offset, int *index) {
-	int end = 0;
-	int offset_tmp = *offset, index_tmp = *index;
-	char *bytes = get_nbits(2, data, offset, index);
+/**
+ * Peek ahead to check for the LZS end-of-stream marker (2-bit 0b11 followed
+ * by 7-bit 0x00) without consuming bits from the stream.
+ */
+static bool bs_is_end_marker(bitstream_t *bs)
+{
+    bitstream_t saved = *bs;  /* snapshot */
+    uint32_t    v;
 
-	if (bytes[0] == (char) 3) {
-		bytes = get_nbits(7, data, offset, index);
+    if (!bs_read_bits(bs, 2, &v) || v != 3) {
+        *bs = saved;
+        return false;
+    }
+    if (!bs_read_bits(bs, 7, &v) || v != 0) {
+        *bs = saved;
+        return false;
+    }
 
-		if (bytes[0] == (char) 0) {
-			end = 1;
-		}
-	}
-
-	*offset = offset_tmp;
-	*index = index_tmp;
-	return end;
+    *bs = saved;  /* peek — do not consume */
+    return true;
 }
 
-char *uncompress_lzs(char *data) {
-	int data_offset = 0, data_index = 0;
-	char abyte, *bytes;
+/* -------------------------------------------------------------------------
+ * LZS decompressor
+ * ---------------------------------------------------------------------- */
 
-	char *history = malloc(sizeof(char) * 2048);
-	int hindex = 0;
+/**
+ * Decode the variable-length match-length field.
+ * Returns the decoded length, or -1 on read error.
+ */
+static int decode_length(bitstream_t *bs)
+{
+    uint32_t v;
 
-	bzero(history, sizeof(char) * 2048);
+    /* First 2-bit group */
+    if (!bs_read_bits(bs, 2, &v))
+        return -1;
+    if (v != 3)
+        return (int)v + 2;   /* length 2..4 */
 
-	while (1) {
-		abyte = get_bit(data, &data_offset, &data_index);
+    /* Second 2-bit group */
+    if (!bs_read_bits(bs, 2, &v))
+        return -1;
+    if (v != 3)
+        return (int)v + 5;   /* length 5..7 */
 
-		if (abyte == (char) 0) {
-			// raw pattern
-			bytes = get_nbits(8, data, &data_offset, &data_index);
-			history[hindex] = bytes[0];
-			hindex++;
+    /* Extended: consume 4-bit groups until one is != 15 */
+    int length = 8;
+    do {
+        if (!bs_read_bits(bs, 4, &v))
+            return -1;
+        length += (int)v;
+    } while (v == 15);
 
-		} else {
-			// string pattern
-
-			int sp_offset = 0;
-
-			abyte = get_bit(data, &data_offset, &data_index);
-
-			if (abyte == (char) 0) {
-				// offset > 127
-				bytes = get_nbits(11, data, &data_offset, &data_index);
-				char aux = bytes[0];
-				bytes[0] = bytes[1];
-				bytes[1] = aux;
-				sp_offset = *((short *) bytes);
-
-			} else {
-				// offset <= 127
-				bytes = get_nbits(7, data, &data_offset, &data_index);
-				sp_offset = *((char *) bytes);
-			}
-
-			int sp_length = 0;
-
-			bytes = get_nbits(2, data, &data_offset, &data_index);
-			if (bytes[0] != 3) {
-				// length <= 4
-				sp_length = ((int) bytes[0]) + 2;
-			} else {
-				bytes = get_nbits(2, data, &data_offset, &data_index);
-
-				if (bytes[0] != 3) {
-					// length <= 7
-					sp_length = ((int) bytes[0]) + 5;
-				} else {
-					// length > 7
-					int n = 0;
-					while (1) {
-						bytes = get_nbits(4, data, &data_offset, &data_index);
-						if (bytes[0] == (char) 15) {
-							n++;
-						} else {
-							break;
-						}
-					}
-					sp_length = (n * 15) + ((int) bytes[0]) + 8;
-				}
-			}
-
-			// copiar patron
-			int count = 0;
-			for (count = 0; count < sp_length; count++) {
-				history[hindex] = history[hindex - sp_offset];
-				//printf("%c\n", history[hindex]);
-				hindex++;
-			}
-		}
-
-		if (is_endmarker(data, &data_offset, &data_index) == 1) {
-			// end marker
-			break;
-		}
-
-	}
-
-	return history;
+    return length;
 }
 
+/**
+ * Decompress LZS-encoded @src_size bytes from @src into a
+ * heap-allocated buffer.  The output is NUL-terminated for
+ * convenience when the content is text.
+ *
+ * @out_size is set to the number of decompressed bytes on success.
+ * Returns a pointer the caller must free(), or NULL on failure.
+ */
+static uint8_t *lzs_decompress(const uint8_t *src, size_t src_size,
+                                size_t *out_size)
+{
+    uint8_t *history = calloc(1, HISTORY_SIZE + 1);  /* +1 for NUL */
+    if (!history) {
+        fprintf(stderr, "lzs_decompress: calloc failed\n");
+        return NULL;
+    }
 
-int main(int argc, char **argv) {
+    bitstream_t bs = { .data = src, .size = src_size };
+    size_t      hpos = 0;
 
-	if( argc == 0) {
-		printf("How to use: %s <data.lzs>\n", argv[0]);
-		return -1;
-	}
+    while (hpos < HISTORY_SIZE) {
 
-	FILE *file = NULL;
+        /* Check end-of-stream *before* reading the next token */
+        if (bs_is_end_marker(&bs)) {
+            /* Consume the marker bits we peeked at */
+            uint32_t dummy;
+            bs_read_bits(&bs, 2, &dummy);
+            bs_read_bits(&bs, 7, &dummy);
+            break;
+        }
 
-	file = fopen(argv[1], "rb");
-	if (!file) {
-		printf("Error. No rom-0 file found.\n");
-		return -1;
-	}
+        int flag = bs_read_bit(&bs);
+        if (flag < 0) {
+            fprintf(stderr, "lzs_decompress: unexpected end of input\n");
+            break;
+        }
 
-	char *data = malloc(sizeof(char) * 2048);
-	fread(data, sizeof(char), 2048, file);
-	fclose(file);
+        if (flag == 0) {
+            /* ---- Literal byte ---- */
+            uint32_t byte;
+            if (!bs_read_bits(&bs, 8, &byte)) {
+                fprintf(stderr, "lzs_decompress: truncated literal\n");
+                break;
+            }
+            history[hpos++] = (uint8_t)byte;
 
-	char *uncompress = uncompress_lzs(data);
-	int count;
-	for (count = 0; count < 2048; count++) {
-		printf("%c", uncompress[count]);
-	}
+        } else {
+            /* ---- Back-reference ---- */
+            int      use_short;
+            uint32_t offset_bits;
 
-	return 0;
+            use_short = bs_read_bit(&bs);
+            if (use_short < 0) break;
+
+            if (!bs_read_bits(&bs, use_short ? 7 : 11, &offset_bits)) {
+                fprintf(stderr, "lzs_decompress: truncated offset\n");
+                break;
+            }
+
+            size_t sp_offset = (size_t)offset_bits;
+
+            if (sp_offset == 0 || sp_offset > hpos) {
+                fprintf(stderr,
+                    "lzs_decompress: invalid back-reference offset %zu "
+                    "(history pos=%zu)\n", sp_offset, hpos);
+                break;
+            }
+
+            int sp_length = decode_length(&bs);
+            if (sp_length < 0) {
+                fprintf(stderr, "lzs_decompress: truncated length\n");
+                break;
+            }
+
+            /* Copy match bytes one at a time to handle overlapping refs */
+            for (int i = 0; i < sp_length && hpos < HISTORY_SIZE; i++) {
+                history[hpos] = history[hpos - sp_offset];
+                hpos++;
+            }
+        }
+    }
+
+    if (out_size)
+        *out_size = hpos;
+
+    return history;
 }
 
+/* -------------------------------------------------------------------------
+ * Entry point
+ * ---------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <data.lzs>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    /* --- Read input file --- */
+    FILE *f = fopen(argv[1], "rb");
+    if (!f) {
+        perror(argv[1]);
+        return EXIT_FAILURE;
+    }
+
+    uint8_t *src = malloc(READ_SIZE);
+    if (!src) {
+        fprintf(stderr, "malloc failed\n");
+        fclose(f);
+        return EXIT_FAILURE;
+    }
+
+    size_t src_size = fread(src, 1, READ_SIZE, f);
+    fclose(f);
+
+    if (src_size == 0) {
+        fprintf(stderr, "error: file is empty or unreadable\n");
+        free(src);
+        return EXIT_FAILURE;
+    }
+
+    /* --- Decompress --- */
+    size_t   out_size = 0;
+    uint8_t *out      = lzs_decompress(src, src_size, &out_size);
+    free(src);
+
+    if (!out)
+        return EXIT_FAILURE;
+
+    /* --- Emit decompressed bytes to stdout --- */
+    fwrite(out, 1, out_size, stdout);
+    free(out);
+
+    return EXIT_SUCCESS;
+}
